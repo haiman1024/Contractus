@@ -28,13 +28,18 @@ Thumbs.db
 *.dylib
 
 # Test artifacts
-/tests/fixtures/output/
+/test_output/
+/coverage/
 
 # Documentation build
-/docs/_build/
+/book/
+/docs/build/
 
 # Local configuration
 .env
 .env.local
 
 remote
+# Kiro IDE
+.kiro/cache/
+.kiro/logs/
