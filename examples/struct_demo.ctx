@@ -1,0 +1,22 @@
+// 结构体演示程序
+struct Point {
+    x: i32,
+    y: i32,
+}
+
+fn add_points(a: Point, b: Point) -> Point {
+    let result: Point = Point {
+        x: a.x + b.x,
+        y: a.y + b.y,
+    };
+    return result;
+}
+
+fn main() -> i32 {
+    let p1 = Point { x: 10, y: 20 };
+    let p2 = Point { x: 30, y: 40 };
+    let sum = add_points(p1, p2);
+
+    print(sum.x);  // 输出 40
+    return 0;
+}

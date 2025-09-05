@@ -1,0 +1,28 @@
+// For 循环演示程序
+fn sum_range(n: i32) -> i32 {
+    let total = 0;
+    for i in 0..n {
+        total = total + i;
+    }
+    return total;
+}
+
+fn sum_array(arr: [i32; 5]) -> i32 {
+    let total = 0;
+    for item in arr {
+        total = total + item;
+    }
+    return total;
+}
+
+fn main() -> i32 {
+    let range_sum = sum_range(10);  // 0+1+2+...+9 = 45
+
+    let numbers: [i32; 5] = [1, 2, 3, 4, 5];
+    let array_sum = sum_array(numbers);  // 1+2+3+4+5 = 15
+
+    print(range_sum);
+    print(array_sum);
+
+    return 0;
+}
