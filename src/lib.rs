@@ -7,7 +7,16 @@
 // - 中间表示 (MIR) - 待实现
 // - 代码生成器 (Code Generator) - 待实现
 
+// 声明模块
+pub mod ast;
 pub mod lexer;
+pub mod parser;
+pub mod span;
+pub mod token;
 
 // 重新导出主要的公共接口
-pub use lexer::{Lexer, Token, TokenKind, Span};
+pub use ast::*;
+pub use lexer::Lexer;
+pub use parser::{ParseError, Parser};
+pub use span::Span;
+pub use token::{Token, TokenKind};

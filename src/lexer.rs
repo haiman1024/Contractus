@@ -5,65 +5,19 @@
 // 3. 内联关键路径
 // 4. 预分配 token 向量
 
+use crate::span::Span;
+use crate::token::{Token, TokenKind};
 use std::fmt;
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum TokenKind {
-    // 字面量
-    IntLiteral(i32),
-    BoolLiteral(bool),
-    StringLiteral(String),
-
-    // 标识符
-    Ident(String),
-
-    // 关键字
-    Fn, Let, Return, If, Else, While, For, In, Struct,
-
-    // 类型关键字
-    I32, Bool, U8,
-
-    // 运算符
-    Assign,        // =
-    Plus, Minus,   // + -
-    Star, Slash,   // * /
-    Equal, NotEqual, // == !=
-    Less, Greater, LessEqual, GreaterEqual, // < > <= >=
-    Arrow,         // ->
-
-    // 分隔符
-    LeftParen, RightParen,      // ( )
-    LeftBrace, RightBrace,      // { }
-    LeftBracket, RightBracket,  // [ ]
-    Semicolon, Colon, Comma, Dot, DotDot, // ; : , . ..
-
-    // 特殊
-    Eof,
-    Error(String),
-}
-
-#[derive(Debug, Clone, Copy)]
-pub struct Span {
-    pub start: usize,
-    pub end: usize,
-    pub line: u32,
-    pub column: u32,
-}
-
-#[derive(Debug, Clone)]
-pub struct Token {
-    pub kind: TokenKind,
-    pub span: Span,
-}
 
 // 高效的词法分析器 - 为自举优化
 pub struct Lexer<'a> {
-    input: &'a [u8],        // 直接操作字节，最高效
-    pos: usize,             // 当前位置
-    current: u8,            // 当前字符（避免重复索引）
-    line: u32,              // 行号
-    column: u32,            // 列号
-    tokens: Vec<Token>,     // 预分配的 token 向量
+    input: &'a [u8],    // 直接操作字节，最高效
+    pos: usize,         // 当前位置
+    current: u8,        // 当前字符（避免重复索引）
+    line: u32,          // 行号
+    column: u32,        // 列号
+    line_start: usize,  // 当前行的起始位置
+    tokens: Vec<Token>, // 预分配的 token 向量
 }
 
 impl<'a> Lexer<'a> {
@@ -78,12 +32,15 @@ impl<'a> Lexer<'a> {
             current: if bytes.is_empty() { 0 } else { bytes[0] },
             line: 1,
             column: 1,
+            line_start: 0,
             tokens: Vec::with_capacity(estimated_tokens),
         }
     }
 
     // 主要的 tokenize 方法
-    pub fn tokenize(mut self) -> Result<Vec<Token>, String> {
+    pub fn tokenize(mut self) -> Result<Vec<Token>, Vec<String>> {
+        let mut errors = Vec::new();
+
         while !self.is_eof() {
             self.skip_whitespace_and_comments();
 
@@ -95,66 +52,148 @@ impl<'a> Lexer<'a> {
             let start_line = self.line;
             let start_column = self.column;
 
-            let kind = self.next_token_kind()?;
-
-            let span = Span {
-                start: start_pos,
-                end: self.pos,
-                line: start_line,
-                column: start_column,
-            };
-
-            self.tokens.push(Token { kind, span });
+            match self.next_token_kind() {
+                Ok(kind) => {
+                    let span = Span::new(start_pos, self.pos, start_line, start_column);
+                    let raw =
+                        String::from_utf8_lossy(&self.input[span.start..span.end]).to_string();
+                    self.tokens.push(Token::new(kind, span, raw));
+                }
+                Err(err) => {
+                    errors.push(err);
+                    self.advance(); // jump error char
+                }
+            }
         }
 
         // 添加 EOF token
-        self.tokens.push(Token {
-            kind: TokenKind::Eof,
-            span: Span {
-                start: self.pos,
-                end: self.pos,
-                line: self.line,
-                column: self.column,
-            },
-        });
+        let span = Span::new(self.pos, self.pos, self.line, self.column);
+        self.tokens
+            .push(Token::new(TokenKind::Eof, span, String::new()));
 
-        Ok(self.tokens)
+        if errors.is_empty() {
+            Ok(self.tokens)
+        } else {
+            Err(errors)
+        }
     }
 
     // 核心 token 识别 - 内联优化
     #[inline]
     fn next_token_kind(&mut self) -> Result<TokenKind, String> {
         match self.current {
-            // 数字 - 最常见，放在前面
             b'0'..=b'9' => self.scan_number(),
-
-            // 标识符和关键字 - 第二常见
             b'a'..=b'z' | b'A'..=b'Z' | b'_' => self.scan_identifier_or_keyword(),
+            b'"' => self.scan_string(),
+            b'\'' => self.scan_char(),
 
-            // 单字符运算符 - 按频率排序
-            b'=' => {
+            // 单字符 token
+            b'(' => {
+                self.advance();
+                Ok(TokenKind::LeftParen)
+            }
+            b')' => {
+                self.advance();
+                Ok(TokenKind::RightParen)
+            }
+            b'{' => {
+                self.advance();
+                Ok(TokenKind::LeftBrace)
+            }
+            b'}' => {
+                self.advance();
+                Ok(TokenKind::RightBrace)
+            }
+            b'[' => {
+                self.advance();
+                Ok(TokenKind::LeftBracket)
+            }
+            b']' => {
+                self.advance();
+                Ok(TokenKind::RightBracket)
+            }
+            b';' => {
+                self.advance();
+                Ok(TokenKind::Semicolon)
+            }
+            b',' => {
+                self.advance();
+                Ok(TokenKind::Comma)
+            }
+            b'@' => {
+                self.advance();
+                Ok(TokenKind::At)
+            }
+            b'?' => {
+                self.advance();
+                Ok(TokenKind::Question)
+            }
+            b'~' => {
+                self.advance();
+                Ok(TokenKind::BitwiseNot)
+            }
+
+            // 可能是多字符的 token
+            b'+' => {
                 self.advance();
                 if self.current == b'=' {
                     self.advance();
-                    Ok(TokenKind::Equal)
+                    Ok(TokenKind::PlusAssign)
                 } else {
-                    Ok(TokenKind::Assign)
+                    Ok(TokenKind::Plus)
                 }
             }
 
-            b'+' => { self.advance(); Ok(TokenKind::Plus) }
             b'-' => {
                 self.advance();
                 if self.current == b'>' {
                     self.advance();
                     Ok(TokenKind::Arrow)
+                } else if self.current == b'=' {
+                    self.advance();
+                    Ok(TokenKind::MinusAssign)
                 } else {
                     Ok(TokenKind::Minus)
                 }
             }
 
-            b'*' => { self.advance(); Ok(TokenKind::Star) }
-            b'/' => { self.advance(); Ok(TokenKind::Slash) }
+            b'*' => {
+                self.advance();
+                if self.current == b'=' {
+                    self.advance();
+                    Ok(TokenKind::StarAssign)
+                } else {
+                    Ok(TokenKind::Star)
+                }
+            }
+
+            b'/' => {
+                self.advance();
+                if self.current == b'=' {
+                    self.advance();
+                    Ok(TokenKind::SlashAssign)
+                } else {
+                    Ok(TokenKind::Slash)
+                }
+            }
+
+            b'%' => {
+                self.advance();
+                Ok(TokenKind::Percent)
+            }
+
+            b'=' => {
+                self.advance();
+                if self.current == b'=' {
+                    self.advance();
+                    Ok(TokenKind::Equal)
+                } else if self.current == b'>' {
+                    self.advance();
+                    Ok(TokenKind::FatArrow)
+                } else {
+                    Ok(TokenKind::Assign)
+                }
+            }
 
             b'!' => {
                 self.advance();
@@ -162,7 +201,7 @@ impl<'a> Lexer<'a> {
                     self.advance();
                     Ok(TokenKind::NotEqual)
                 } else {
-                    Err(format!("Unexpected character '!' at line {}, column {}", self.line, self.column))
+                    Ok(TokenKind::LogicalNot)
                 }
             }
 
@@ -171,6 +210,9 @@ impl<'a> Lexer<'a> {
                 if self.current == b'=' {
                     self.advance();
                     Ok(TokenKind::LessEqual)
+                } else if self.current == b'<' {
+                    self.advance();
+                    Ok(TokenKind::LeftShift)
                 } else {
                     Ok(TokenKind::Less)
                 }
@@ -181,38 +223,68 @@ impl<'a> Lexer<'a> {
                 if self.current == b'=' {
                     self.advance();
                     Ok(TokenKind::GreaterEqual)
+                } else if self.current == b'>' {
+                    self.advance();
+                    Ok(TokenKind::RightShift)
                 } else {
                     Ok(TokenKind::Greater)
                 }
             }
 
-            // 分隔符
-            b'(' => { self.advance(); Ok(TokenKind::LeftParen) }
-            b')' => { self.advance(); Ok(TokenKind::RightParen) }
-            b'{' => { self.advance(); Ok(TokenKind::LeftBrace) }
-            b'}' => { self.advance(); Ok(TokenKind::RightBrace) }
-            b'[' => { self.advance(); Ok(TokenKind::LeftBracket) }
-            b']' => { self.advance(); Ok(TokenKind::RightBracket) }
-            b';' => { self.advance(); Ok(TokenKind::Semicolon) }
-            b':' => { self.advance(); Ok(TokenKind::Colon) }
-            b',' => { self.advance(); Ok(TokenKind::Comma) }
+            b'&' => {
+                self.advance();
+                if self.current == b'&' {
+                    self.advance();
+                    Ok(TokenKind::LogicalAnd)
+                } else {
+                    Ok(TokenKind::BitwiseAnd)
+                }
+            }
+
+            b'|' => {
+                self.advance();
+                if self.current == b'|' {
+                    self.advance();
+                    Ok(TokenKind::LogicalOr)
+                } else {
+                    Ok(TokenKind::BitwiseOr)
+                }
+            }
+
+            b'^' => {
+                self.advance();
+                Ok(TokenKind::BitwiseXor)
+            }
+
+            b':' => {
+                self.advance();
+                if self.current == b':' {
+                    self.advance();
+                    Ok(TokenKind::DoubleColon)
+                } else {
+                    Ok(TokenKind::Colon)
+                }
+            }
 
             b'.' => {
                 self.advance();
                 if self.current == b'.' {
                     self.advance();
-                    Ok(TokenKind::DotDot)
+                    if self.current == b'=' {
+                        self.advance();
+                        Ok(TokenKind::DotDotEqual)
+                    } else {
+                        Ok(TokenKind::DotDot)
+                    }
                 } else {
                     Ok(TokenKind::Dot)
                 }
             }
 
-            // 字符串字面量
-            b'"' => self.scan_string(),
-
-            // 错误情况
-            c => Err(format!("Unexpected character '{}' at line {}, column {}",
-                           c as char, self.line, self.column)),
+            c => Err(format!(
+                "Unexpected character '{}' at line {}, column {}",
+                c as char, self.line, self.column
+            )),
         }
     }
 
@@ -221,22 +293,65 @@ impl<'a> Lexer<'a> {
     fn scan_number(&mut self) -> Result<TokenKind, String> {
         let start = self.pos;
 
-        // 快速扫描数字
-        while self.current.is_ascii_digit() {
+        // 处理十六进制
+        if self.current == b'0' && self.peek() == b'x' {
+            self.advance();
+            self.advance();
+
+            while self.current.is_ascii_hexdigit() || self.current == b'_' {
+                self.advance();
+            }
+
+            let num_str =
+                String::from_utf8_lossy(&self.input[start + 2..self.pos]).replace('_', "");
+
+            match i32::from_str_radix(&num_str, 16) {
+                Ok(value) => return Ok(TokenKind::IntLiteral(value)),
+                Err(_) => return Err(format!("Invalid hexadecimal number at line {}", self.line)),
+            }
+        }
+
+        // 处理二进制
+        if self.current == b'0' && self.peek() == b'b' {
+            self.advance();
+            self.advance();
+
+            while self.current == b'0' || self.current == b'1' || self.current == b'_' {
+                self.advance();
+            }
+
+            let num_str =
+                String::from_utf8_lossy(&self.input[start + 2..self.pos]).replace('_', "");
+
+            match i32::from_str_radix(&num_str, 2) {
+                Ok(value) => return Ok(TokenKind::IntLiteral(value)),
+                Err(_) => return Err(format!("Invalid binary number at line {}", self.line)),
+            }
+        }
+
+        // 扫描整数部分
+        while self.current.is_ascii_digit() || self.current == b'_' {
             self.advance();
         }
 
-        // 直接从字节切片解析，避免 UTF-8 转换
-        let num_bytes = &self.input[start..self.pos];
-        let num_str = unsafe {
-            // 安全：我们知道这些都是 ASCII 数字
-            std::str::from_utf8_unchecked(num_bytes)
-        };
+        // 检查是否是浮点数
+        if self.current == b'.' && self.peek().is_ascii_digit() {
+            // 暂时跳过浮点数支持，可以后续添加
+            return Err(format!(
+                "Float literals not yet supported at line {}",
+                self.line
+            ));
+        }
+
+        // 解析整数
+        let num_str = String::from_utf8_lossy(&self.input[start..self.pos]).replace('_', "");
 
         match num_str.parse::<i32>() {
             Ok(value) => Ok(TokenKind::IntLiteral(value)),
-            Err(_) => Err(format!("Invalid number '{}' at line {}, column {}",
-                                num_str, self.line, self.column)),
+            Err(_) => Err(format!(
+                "Invalid number '{}' at line {}",
+                num_str, self.line
+            )),
         }
     }
 
@@ -258,31 +373,53 @@ impl<'a> Lexer<'a> {
 
         // 关键字识别 - 按长度和频率优化
         Ok(match ident {
-            // 长度2 - 最常用
+            // 关键字
             "fn" => TokenKind::Fn,
-            "if" => TokenKind::If,
-            "in" => TokenKind::In,
-
-            // 长度3
             "let" => TokenKind::Let,
-            "for" => TokenKind::For,
-            "i32" => TokenKind::I32,
-            "u8" => TokenKind::U8,
-
-            // 长度4
+            "mut" => TokenKind::Mut,
+            "return" => TokenKind::Return,
+            "if" => TokenKind::If,
             "else" => TokenKind::Else,
-            "bool" => TokenKind::Bool,
-            "true" => TokenKind::BoolLiteral(true),
-
-            // 长度5
             "while" => TokenKind::While,
+            "for" => TokenKind::For,
+            "in" => TokenKind::In,
+            "break" => TokenKind::Break,
+            "continue" => TokenKind::Continue,
+            "struct" => TokenKind::Struct,
+            "enum" => TokenKind::Enum,
+            "match" => TokenKind::Match,
+            "import" => TokenKind::Import,
+            "export" => TokenKind::Export,
+            "pub" => TokenKind::Pub,
+            "const" => TokenKind::Const,
+            "static" => TokenKind::Static,
+            "as" => TokenKind::As,
+
+            // 类型
+            "i8" => TokenKind::I8,
+            "i16" => TokenKind::I16,
+            "i32" => TokenKind::I32,
+            "i64" => TokenKind::I64,
+            "u8" => TokenKind::U8,
+            "u16" => TokenKind::U16,
+            "u32" => TokenKind::U32,
+            "u64" => TokenKind::U64,
+            "usize" => TokenKind::Usize,
+            "isize" => TokenKind::Isize,
+            "f32" => TokenKind::F32,
+            "f64" => TokenKind::F64,
+            "bool" => TokenKind::Bool,
+            "char" => TokenKind::Char,
+            "string" => TokenKind::String,
+
+            // 布尔字面量
+            "true" => TokenKind::BoolLiteral(true),
             "false" => TokenKind::BoolLiteral(false),
 
-            // 长度6
-            "return" => TokenKind::Return,
-            "struct" => TokenKind::Struct,
+            // 特殊标识符
+            "_" => TokenKind::Underscore,
 
-            // 默认为标识符
+            // 普通标识符
             _ => TokenKind::Ident(ident.to_string()),
         })
     }
@@ -290,29 +427,91 @@ impl<'a> Lexer<'a> {
     // 字符串扫描
     fn scan_string(&mut self) -> Result<TokenKind, String> {
         self.advance(); // 跳过开始的 "
-        let start = self.pos;
+        let mut string = String::new();
 
         while !self.is_eof() && self.current != b'"' {
             if self.current == b'\\' {
-                self.advance(); // 跳过转义字符
+                self.advance();
                 if !self.is_eof() {
+                    let escaped = match self.current {
+                        b'n' => '\n',
+                        b'r' => '\r',
+                        b't' => '\t',
+                        b'\\' => '\\',
+                        b'"' => '"',
+                        b'0' => '\0',
+                        c => {
+                            return Err(format!(
+                                "Invalid escape sequence '\\{}' at line {}",
+                                c as char, self.line
+                            ));
+                        }
+                    };
+                    string.push(escaped);
                     self.advance();
                 }
             } else {
+                string.push(self.current as char);
                 self.advance();
             }
         }
 
         if self.is_eof() {
-            return Err(format!("Unterminated string at line {}, column {}",
-                             self.line, self.column));
+            return Err(format!("Unterminated string at line {}", self.line));
         }
 
-        let string_bytes = &self.input[start..self.pos];
-        let string_content = String::from_utf8_lossy(string_bytes).into_owned();
-
         self.advance(); // 跳过结束的 "
-        Ok(TokenKind::StringLiteral(string_content))
+        Ok(TokenKind::StringLiteral(string))
+    }
+
+    #[inline]
+    fn scan_char(&mut self) -> Result<TokenKind, String> {
+        self.advance(); // 跳过开始的 '
+
+        if self.is_eof() {
+            return Err(format!(
+                "Unterminated character literal at line {}",
+                self.line
+            ));
+        }
+
+        let ch = if self.current == b'\\' {
+            self.advance();
+            if self.is_eof() {
+                return Err(format!(
+                    "Unterminated character literal at line {}",
+                    self.line
+                ));
+            }
+            match self.current {
+                b'n' => '\n',
+                b'r' => '\r',
+                b't' => '\t',
+                b'\\' => '\\',
+                b'\'' => '\'',
+                b'0' => '\0',
+                c => {
+                    return Err(format!(
+                        "Invalid escape sequence '\\{}' in character literal at line {}",
+                        c as char, self.line
+                    ));
+                }
+            }
+        } else {
+            self.current as char
+        };
+
+        self.advance();
+
+        if self.current != b'\'' {
+            return Err(format!(
+                "Character literal must be exactly one character at line {}",
+                self.line
+            ));
+        }
+
+        self.advance(); // 跳过结束的 '
+        Ok(TokenKind::CharLiteral(ch))
     }
 
     // 跳过空白字符和注释 - 优化的版本
@@ -326,11 +525,36 @@ impl<'a> Lexer<'a> {
                 b'\n' => {
                     self.line += 1;
                     self.column = 1;
-                    self.advance();
+                    self.pos += 1;
+                    self.line_start = self.pos;
+                    if self.pos < self.input.len() {
+                        self.current = self.input[self.pos];
+                    } else {
+                        self.current = 0;
+                    }
                 }
                 b'/' if self.peek() == b'/' => {
                     // 单行注释
                     while !self.is_eof() && self.current != b'\n' {
+                        self.advance();
+                    }
+                }
+                b'/' if self.peek() == b'*' => {
+                    // 多行注释
+                    self.advance(); // /
+                    self.advance(); // *
+
+                    while !self.is_eof() {
+                        if self.current == b'*' && self.peek() == b'/' {
+                            self.advance(); // *
+                            self.advance(); // /
+                            break;
+                        }
+                        if self.current == b'\n' {
+                            self.line += 1;
+                            self.column = 0;
+                            self.line_start = self.pos + 1;
+                        }
                         self.advance();
                     }
                 }
@@ -354,11 +578,6 @@ impl<'a> Lexer<'a> {
     }
 
     #[inline]
-    fn is_eof(&self) -> bool {
-        self.pos >= self.input.len()
-    }
-
-    #[inline]
     fn peek(&self) -> u8 {
         if self.pos + 1 < self.input.len() {
             self.input[self.pos + 1]
@@ -366,53 +585,121 @@ impl<'a> Lexer<'a> {
             0
         }
     }
+
+    #[inline]
+    fn is_eof(&self) -> bool {
+        self.pos >= self.input.len()
+    }
 }
 
 // 实现 Display trait 用于调试
 impl fmt::Display for TokenKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            // --- 字面量 ---
             TokenKind::IntLiteral(n) => write!(f, "{}", n),
-            TokenKind::BoolLiteral(b) => write!(f, "{}", b),
-            TokenKind::StringLiteral(s) => write!(f, "\"{}\"", s),
-            TokenKind::Ident(s) => write!(f, "{}", s),
+            TokenKind::BoolLiteral(b) => write!(f, "{}", if *b { "true" } else { "false" }),
+            TokenKind::StringLiteral(s) => write!(f, "\"{}\"", s.escape_debug()), // 安全转义
+            TokenKind::CharLiteral(c) => write!(f, "'{}'", c.escape_debug()),     // 安全转义
+
+            // --- 标识符 ---
+            TokenKind::Ident(name) => write!(f, "{}", name),
+
+            // --- 关键字 ---
             TokenKind::Fn => write!(f, "fn"),
             TokenKind::Let => write!(f, "let"),
+            TokenKind::Mut => write!(f, "mut"),
             TokenKind::Return => write!(f, "return"),
             TokenKind::If => write!(f, "if"),
             TokenKind::Else => write!(f, "else"),
             TokenKind::While => write!(f, "while"),
             TokenKind::For => write!(f, "for"),
             TokenKind::In => write!(f, "in"),
+            TokenKind::Break => write!(f, "break"),
+            TokenKind::Continue => write!(f, "continue"),
             TokenKind::Struct => write!(f, "struct"),
+            TokenKind::Enum => write!(f, "enum"),
+            TokenKind::Match => write!(f, "match"),
+            TokenKind::Import => write!(f, "import"),
+            TokenKind::Export => write!(f, "export"),
+            TokenKind::Pub => write!(f, "pub"),
+            TokenKind::Const => write!(f, "const"),
+            TokenKind::Static => write!(f, "static"),
+            TokenKind::As => write!(f, "as"),
+
+            // --- 类型关键字 ---
+            TokenKind::I8 => write!(f, "i8"),
+            TokenKind::I16 => write!(f, "i16"),
             TokenKind::I32 => write!(f, "i32"),
-            TokenKind::Bool => write!(f, "bool"),
+            TokenKind::I64 => write!(f, "i64"),
             TokenKind::U8 => write!(f, "u8"),
-            TokenKind::Assign => write!(f, "="),
+            TokenKind::U16 => write!(f, "u16"),
+            TokenKind::U32 => write!(f, "u32"),
+            TokenKind::U64 => write!(f, "u64"),
+            TokenKind::Usize => write!(f, "usize"),
+            TokenKind::Isize => write!(f, "isize"),
+            TokenKind::F32 => write!(f, "f32"),
+            TokenKind::F64 => write!(f, "f64"),
+            TokenKind::Bool => write!(f, "bool"),
+            TokenKind::Char => write!(f, "char"),
+            TokenKind::String => write!(f, "string"),
+
+            // --- 运算符 ---
             TokenKind::Plus => write!(f, "+"),
             TokenKind::Minus => write!(f, "-"),
             TokenKind::Star => write!(f, "*"),
             TokenKind::Slash => write!(f, "/"),
+            TokenKind::Percent => write!(f, "%"),
+
+            TokenKind::Assign => write!(f, "="),
+            TokenKind::PlusAssign => write!(f, "+="),
+            TokenKind::MinusAssign => write!(f, "-="),
+            TokenKind::StarAssign => write!(f, "*="),
+            TokenKind::SlashAssign => write!(f, "/="),
+
             TokenKind::Equal => write!(f, "=="),
             TokenKind::NotEqual => write!(f, "!="),
             TokenKind::Less => write!(f, "<"),
             TokenKind::Greater => write!(f, ">"),
             TokenKind::LessEqual => write!(f, "<="),
             TokenKind::GreaterEqual => write!(f, ">="),
-            TokenKind::Arrow => write!(f, "->"),
+
+            TokenKind::LogicalAnd => write!(f, "&&"),
+            TokenKind::LogicalOr => write!(f, "||"),
+            TokenKind::LogicalNot => write!(f, "!"),
+
+            TokenKind::BitwiseAnd => write!(f, "&"),
+            TokenKind::BitwiseOr => write!(f, "|"),
+            TokenKind::BitwiseXor => write!(f, "^"),
+            TokenKind::BitwiseNot => write!(f, "~"),
+            TokenKind::LeftShift => write!(f, "<<"),
+            TokenKind::RightShift => write!(f, ">>"),
+
+            // --- 分隔符 ---
             TokenKind::LeftParen => write!(f, "("),
             TokenKind::RightParen => write!(f, ")"),
             TokenKind::LeftBrace => write!(f, "{{"),
             TokenKind::RightBrace => write!(f, "}}"),
             TokenKind::LeftBracket => write!(f, "["),
             TokenKind::RightBracket => write!(f, "]"),
+
             TokenKind::Semicolon => write!(f, ";"),
             TokenKind::Colon => write!(f, ":"),
+            TokenKind::DoubleColon => write!(f, "::"),
             TokenKind::Comma => write!(f, ","),
             TokenKind::Dot => write!(f, "."),
-            TokenKind::DotDot => write!(f,".."),
+            TokenKind::DotDot => write!(f, ".."),
+            TokenKind::DotDotEqual => write!(f, "..="),
+            TokenKind::Arrow => write!(f, "->"),
+            TokenKind::FatArrow => write!(f, "=>"),
+            TokenKind::Question => write!(f, "?"),
+            TokenKind::At => write!(f, "@"),
+            TokenKind::Underscore => write!(f, "_"),
+
+            // --- 特殊 ---
+            TokenKind::Newline => write!(f, "\\n"),
             TokenKind::Eof => write!(f, "EOF"),
-            TokenKind::Error(msg) => write!(f, "ERROR: {}", msg),
+            TokenKind::Error(msg) => write!(f, "error({})", msg),
         }
     }
 }
@@ -425,14 +712,25 @@ mod tests {
     fn test_token_creation() {
         let token = Token {
             kind: TokenKind::Fn,
-            span: Span { start: 0, end: 2, line: 1, column: 1 },
+            span: Span {
+                start: 0,
+                end: 2,
+                line: 1,
+                column: 1,
+            },
+            raw: "fn".to_string(),
         };
         assert_eq!(token.kind, TokenKind::Fn);
     }
 
     #[test]
     fn test_span_creation() {
-        let span = Span { start: 0, end: 5, line: 1, column: 1 };
+        let span = Span {
+            start: 0,
+            end: 5,
+            line: 1,
+            column: 1,
+        };
         assert_eq!(span.start, 0);
         assert_eq!(span.end, 5);
     }

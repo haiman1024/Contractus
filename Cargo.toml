@@ -2,10 +2,10 @@
 name = "contractus"
 version = "0.1.0"
 edition = "2021"
-authors = ["Contractus Team"]
+authors = ["haiman1024 <alexredskaber@gmail.com>"]
 description = "Contractus programming language compiler - A modern systems programming language"
 license = "MIT"
-repository = "https://github.com/your-username/contractus"
+repository = "https://github.com/haiman1024/contractus"
 keywords = ["compiler", "programming-language", "systems", "self-hosting"]
 categories = ["compilers", "development-tools"]
 
@@ -21,5 +21,4 @@ path = "src/main.rs"
 # 暂时不加任何依赖，纯手写实现
 
 [dev-dependencies]
-# 用于快照测试（未来可能需要）
-# insta = "1.31"
+# 未来可能用于快照测试
